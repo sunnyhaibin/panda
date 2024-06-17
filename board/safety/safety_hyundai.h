@@ -1,12 +1,12 @@
 #include "safety_hyundai_common.h"
 
-#define HYUNDAI_LIMITS(steer, rate_up, rate_down, drv_trq_allowance) { \
+#define HYUNDAI_LIMITS(steer, rate_up, rate_down) { \
   .max_steer = (steer), \
   .max_rate_up = (rate_up), \
   .max_rate_down = (rate_down), \
   .max_rt_delta = 112, \
   .max_rt_interval = 250000, \
-  .driver_torque_allowance = (drv_trq_allowance), \
+  .driver_torque_allowance = 50, \
   .driver_torque_factor = 2, \
   .type = TorqueDriverLimited, \
    /* the EPS faults when the steering angle is above a certain threshold for too long. to prevent this, */ \
@@ -17,9 +17,8 @@
   .has_steer_req_tolerance = true, \
 }
 
-const SteeringLimits HYUNDAI_STEERING_LIMITS = HYUNDAI_LIMITS(384, 3, 7, 50);
-const SteeringLimits HYUNDAI_STEERING_LIMITS_ALT = HYUNDAI_LIMITS(270, 2, 3, 50);
-const SteeringLimits HYUNDAI_STEERING_LIMITS_CAN_CANFD_HYBRID = HYUNDAI_LIMITS(384, 3, 7, 250);
+const SteeringLimits HYUNDAI_STEERING_LIMITS = HYUNDAI_LIMITS(384, 3, 7);
+const SteeringLimits HYUNDAI_STEERING_LIMITS_ALT = HYUNDAI_LIMITS(270, 2, 3);
 
 const LongitudinalLimits HYUNDAI_LONG_LIMITS = {
   .max_accel = 200,   // 1/100 m/s2
@@ -50,6 +49,27 @@ const CanMsg HYUNDAI_LONG_TX_MSGS[] = {
   {0x38D, 0, 8}, // FCA11 Bus 0
   {0x483, 0, 8}, // FCA12 Bus 0
   {0x7D0, 0, 8}, // radar UDS TX addr Bus 0 (for radar disable)
+};
+
+const CanMsg HYUNDAI_CAN_CANFD_HYBRID_HDA2_LONG_TX_MSGS[] = {
+  {0x50, 0, 16},
+  {0x4F1, 1, 4},
+  {0x2A4, 0, 24},
+  {0x51, 0, 32},
+  {0x730, 1, 8},
+  {0x340, 1, 8},
+  {0x485, 1, 8},
+  {0x420, 1, 8},
+  {0x421, 1, 8},
+  {0x389, 1, 8},
+  {0x38D, 1, 8},
+  {0x363, 1, 8},
+  {0x398, 1, 8},
+  {0x399, 1, 8},
+  {0x39a, 1, 8},
+  {0x39b, 1, 8},
+  {0x39c, 1, 8},
+  {0x43a, 1, 8},
 };
 
 const CanMsg HYUNDAI_CAMERA_SCC_TX_MSGS[] = {
@@ -94,12 +114,16 @@ RxCheck hyundai_legacy_rx_checks[] = {
   HYUNDAI_SCC12_ADDR_CHECK(false, 0)
 };
 
+RxCheck hyundai_can_canfd_hybrid_hda2_long_rx_checks[] = {
+  HYUNDAI_COMMON_RX_CHECKS(false, true, 1)
+  {.msg = {{0x4F1, 1, 4, .check_checksum = false, .max_counter = 15U, .frequency = 50U}, { 0 }, { 0 }}},
+};
+
 
 const int HYUNDAI_PARAM_CAN_CANFD_HYBRID = 256;
 bool hyundai_legacy = false;
 bool hyundai_can_canfd_hybrid = false;
 bool hyundai_can_canfd_hybrid_hda2 = false;
-
 
 
 static uint8_t hyundai_get_counter(const CANPacket_t *to_push) {
@@ -231,7 +255,7 @@ static void hyundai_rx_hook(const CANPacket_t *to_push) {
 
     // If openpilot is controlling longitudinal we need to ensure the radar is turned off
     // Enforce by checking we don't see SCC12
-    if (hyundai_longitudinal && (addr == 0x421)) {
+    if (hyundai_longitudinal && (((addr == 0x421) && !hyundai_can_canfd_hybrid_hda2) || ((addr == 0x420) && hyundai_can_canfd_hybrid_hda2))) {
       stock_ecu_detected = true;
     }
     generic_rx_checks(stock_ecu_detected);
@@ -243,7 +267,7 @@ static bool hyundai_tx_hook(const CANPacket_t *to_send) {
   int addr = GET_ADDR(to_send);
 
   // FCA11: Block any potential actuation
-  if (addr == 0x38D) {
+  if ((addr == 0x38D) && !hyundai_can_canfd_hybrid_hda2) {
     int CR_VSM_DecCmd = GET_BYTE(to_send, 1);
     bool FCA_CmdAct = GET_BIT(to_send, 20U);
     bool CF_VSM_DecCmdAct = GET_BIT(to_send, 31U);
@@ -254,12 +278,14 @@ static bool hyundai_tx_hook(const CANPacket_t *to_send) {
   }
 
   // ACCEL: safety check
-  if (addr == 0x421) {
-    int desired_accel_raw = (((GET_BYTE(to_send, 4) & 0x7U) << 8) | GET_BYTE(to_send, 3)) - 1023U;
-    int desired_accel_val = ((GET_BYTE(to_send, 5) << 3) | (GET_BYTE(to_send, 4) >> 5)) - 1023U;
+  if (((addr == 0x420) && hyundai_can_canfd_hybrid_hda2) || ((addr == 0x421) && !hyundai_can_canfd_hybrid_hda2)) {
+    int desired_accel_raw = hyundai_can_canfd_hybrid_hda2 ? (((GET_BYTE(to_send, 4) & 0x3FU) << 5) | (GET_BYTE(to_send, 3) >> 3)) - 1023U :
+                                                            (((GET_BYTE(to_send, 4) & 0x7U) << 8) | GET_BYTE(to_send, 3)) - 1023U;
+    int desired_accel_val = hyundai_can_canfd_hybrid_hda2 ? (((GET_BYTE(to_send, 3) & 0x7U) << 8) | GET_BYTE(to_send, 2)) - 1023U :
+                                                            ((GET_BYTE(to_send, 5) << 3) | (GET_BYTE(to_send, 4) >> 5)) - 1023U;
 
-    int aeb_decel_cmd = GET_BYTE(to_send, 2);
-    bool aeb_req = GET_BIT(to_send, 54U);
+    int aeb_decel_cmd = hyundai_can_canfd_hybrid_hda2 ? 0 : GET_BYTE(to_send, 2);
+    bool aeb_req = hyundai_can_canfd_hybrid_hda2 ? 0 : GET_BIT(to_send, 54U);
 
     bool violation = false;
 
@@ -274,7 +300,7 @@ static bool hyundai_tx_hook(const CANPacket_t *to_send) {
   }
 
   // LKA STEER: safety check
-  if (addr == 0x340) {
+  if ((addr == 0x340) && !hyundai_can_canfd_hybrid_hda2) {
     int desired_torque = ((GET_BYTES(to_send, 0, 4) >> 16) & 0x7ffU) - 1024U;
     bool steer_req = GET_BIT(to_send, 27U);
 
@@ -289,13 +315,13 @@ static bool hyundai_tx_hook(const CANPacket_t *to_send) {
     int desired_torque = (((GET_BYTE(to_send, 6) & 0xFU) << 7U) | (GET_BYTE(to_send, 5) >> 1U)) - 1024U;
     bool steer_req = GET_BIT(to_send, 52U);
 
-    if (steer_torque_cmd_checks(desired_torque, steer_req, HYUNDAI_STEERING_LIMITS_CAN_CANFD_HYBRID)) {
+    if (steer_torque_cmd_checks(desired_torque, steer_req, HYUNDAI_STEERING_LIMITS)) {
       tx = false;
     }
   }
 
   // UDS: Only tester present ("\x02\x3E\x80\x00\x00\x00\x00\x00") allowed on diagnostics address
-  if (addr == 0x7D0) {
+  if ((addr == 0x7D0) || (addr == 0x730)) {
     if ((GET_BYTES(to_send, 0, 4) != 0x00803E02U) || (GET_BYTES(to_send, 4, 4) != 0x0U)) {
       tx = false;
     }
@@ -350,13 +376,14 @@ static safety_config hyundai_init(uint16_t param) {
     gen_crc_lookup_table_16(0x1021, hyundai_canfd_crc_lut);
   }
 
-  if (hyundai_camera_scc || hyundai_can_canfd_hybrid_hda2) {
+  if (hyundai_camera_scc) {
     hyundai_longitudinal = false;
   }
 
   safety_config ret;
   if (hyundai_longitudinal) {
-    ret = BUILD_SAFETY_CFG(hyundai_long_rx_checks, HYUNDAI_LONG_TX_MSGS);
+    ret = hyundai_can_canfd_hybrid_hda2 ? BUILD_SAFETY_CFG(hyundai_can_canfd_hybrid_hda2_long_rx_checks, HYUNDAI_CAN_CANFD_HYBRID_HDA2_LONG_TX_MSGS) :
+                                          BUILD_SAFETY_CFG(hyundai_long_rx_checks, HYUNDAI_LONG_TX_MSGS);
   } else if (hyundai_camera_scc) {
     ret = BUILD_SAFETY_CFG(hyundai_cam_scc_rx_checks, HYUNDAI_CAMERA_SCC_TX_MSGS);
   // TODO: should just be hyundai_hda2
