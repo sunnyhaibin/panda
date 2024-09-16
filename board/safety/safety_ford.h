@@ -301,6 +301,8 @@ static bool ford_tx_hook(const CANPacket_t *to_send) {
     bool violation = false;
     violation |= GET_BIT(to_send, 8U) && !cruise_engaged_prev;                              // Signal: CcAslButtnCnclPress (cancel)
     violation |= GET_BIT(to_send, 25U) && !(controls_allowed && controls_allowed_long);     // Signal: CcAsllButtnResPress (resume)
+    violation |= GET_BIT(to_send, 27U) && !(controls_allowed && controls_allowed_long);     // Signal: CcAslButtnSetIncPress (accel)
+    violation |= GET_BIT(to_send, 28U) && !(controls_allowed && controls_allowed_long);     // Signal: CcAslButtnSetDecPress (decel)
 
     if (violation) {
       tx = false;
