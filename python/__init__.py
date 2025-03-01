@@ -9,10 +9,11 @@ import binascii
 from functools import wraps, partial
 from itertools import accumulate
 
+from opendbc.car.structs import CarParams
+
 from .base import BaseHandle
 from .constants import FW_PATH, McuType
 from .dfu import PandaDFU
-from .isotp import isotp_send, isotp_recv
 from .spi import PandaSpiHandle, PandaSpiException, PandaProtocolMismatch
 from .usb import PandaUsbHandle
 from .utils import logger
@@ -712,7 +713,7 @@ class Panda:
   def set_power_save(self, power_save_enabled=0):
     self._handle.controlWrite(Panda.REQUEST_OUT, 0xe7, int(power_save_enabled), 0, b'')
 
-  def set_safety_mode(self, mode=0, param=0):  # Safety.SAFETY_SILENT
+  def set_safety_mode(self, mode=CarParams.SafetyModel.silent, param=0):
     self._handle.controlWrite(Panda.REQUEST_OUT, 0xdc, mode, param, b'')
 
   def set_obd(self, obd):
@@ -792,14 +793,6 @@ class Panda:
 
     """
     self._handle.controlWrite(Panda.REQUEST_OUT, 0xf1, bus, 0, b'')
-
-  # ******************* isotp *******************
-
-  def isotp_send(self, addr, dat, bus, recvaddr=None, subaddr=None):
-    return isotp_send(self, dat, addr, bus, recvaddr, subaddr)
-
-  def isotp_recv(self, addr, bus=0, sendaddr=None, subaddr=None):
-    return isotp_recv(self, addr, bus, sendaddr, subaddr)
 
   # ******************* serial *******************
 
